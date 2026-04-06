@@ -1,15 +1,17 @@
-Amazon Brand Research Wizard v2
+Amazon Brand Research Wizard v3
 
-1. Open chrome://extensions
-2. Enable Developer mode
-3. Click Load unpacked
-4. Select this folder
-5. Open an Amazon product page
-6. Click the round wizard button on the right
-7. Paste your OpenAI API key and click Save Key
-8. Click Start Research
+Extension:
+- Load unpacked in chrome://extensions
+- Open an Amazon product page
+- Save your OpenAI API key once
+- Click Start Research
 
-Notes:
-- This version uses OpenAI directly from the extension.
-- The API key is stored locally in the extension for personal use.
-- The logic runs in 3 passes: website verification, official-site extraction, fallback social/business-source search.
+Architecture:
+- OpenAI is used only for brand resolution, official website verification, and verified naming.
+- Railway backend is the single crawler for contacts, socials, address, timezone, contact page, and B2B page.
+- Browser-side crawl fallback has been removed.
+
+Deploy backend:
+- Replace main.py, requirements.txt, Procfile in Railway repo
+- Redeploy service
+- Verify /health and /research endpoints
