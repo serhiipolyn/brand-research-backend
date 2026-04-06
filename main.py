@@ -86,42 +86,54 @@ def normalize_url(url):
         return url
 
 
+def infer_source_type(page_url, root_domain):
+    lower = (page_url or '').lower()
+    if 'facebook.com' in lower:
+        return 'facebook'
+    if 'linkedin.com' in lower:
+        return 'linkedin'
+    return 'website' if get_domain(page_url) == root_domain else 'fallback'
+
+
 # ── Contact extractors ────────────────────────────────────────────────────────
 
-def extract_phones(soup, text):
-    phones = set()
-    faxes = set()
+def extract_phones(soup, text, page_url, root_domain):
+    phones = []
+    faxes = []
 
     # tel: links — most reliable
     for a in soup.find_all('a', href=True):
         href = a['href']
         if href.startswith('tel:'):
             digits = re.sub(r'\D', '', href[4:])
+            normalized = ''
             if len(digits) == 10 and digits[0] in '23456789':
-                phones.add(f"({digits[:3]}) {digits[3:6]}-{digits[6:]}")
+                normalized = f"({digits[:3]}) {digits[3:6]}-{digits[6:]}"
             elif len(digits) == 11 and digits[0] == '1' and digits[1] in '23456789':
-                phones.add(f"({digits[1:4]}) {digits[4:7]}-{digits[7:]}")
+                normalized = f"({digits[1:4]}) {digits[4:7]}-{digits[7:]}"
+            if normalized and normalized.replace('(','').replace(')','').replace('-','').replace(' ','') not in ('5555555555','1234567890'):
+                phones.append({'value': normalized, 'source_type': infer_source_type(page_url, root_domain), 'source_url': page_url})
 
-    # Text pattern — strict US only, check context before number for fax
     phone_re = re.compile(r'(?<!\d)(?:\+?1[\s\-.]?)?\(?([2-9]\d{2})\)?[\s\-.]([2-9]\d{2})[\s\-.](\d{4})(?!\d)')
     for m in phone_re.finditer(text):
         normalized = f"({m.group(1)}) {m.group(2)}-{m.group(3)}"
         digits = m.group(1) + m.group(2) + m.group(3)
-        # Skip bogus numbers
         if digits in ('5555555555', '1234567890') or '555' in digits[:6]:
             continue
-        before = text[max(0, m.start() - 60):m.start()].lower()
-        if re.search(r'fax|facsimile', before):
-            faxes.add(normalized)
+        before = text[max(0, m.start() - 80):m.start()].lower()
+        after = text[m.end():m.end() + 80].lower()
+        item = {'value': normalized, 'source_type': infer_source_type(page_url, root_domain), 'source_url': page_url}
+        if re.search(r'fax|facsimile|f:\s*$', before) or re.search(r'^\s*(fax|facsimile|f:)', after):
+            faxes.append(item)
         else:
-            phones.add(normalized)
+            phones.append(item)
 
-    # Remove phones that are also faxes
-    phones -= faxes
-    return sorted(phones), sorted(faxes)
+    phones = dedupe_contact_items(phones)
+    faxes = dedupe_contact_items(faxes)
+    phones = [p for p in phones if not any(same_digits(p['value'], f['value']) for f in faxes)]
+    return phones, faxes
 
-
-def extract_emails(soup, root_domain):
+def extract_emails(soup, root_domain, page_url):
     emails = set()
     # mailto: links
     for a in soup.find_all('a', href=True):
@@ -136,28 +148,32 @@ def extract_emails(soup, root_domain):
         e = m.group(0).lower()
         if not is_bogus_email(e):
             emails.add(e)
-    # Prefer same-domain emails
     same = [e for e in emails if e.split('@')[1] == root_domain]
-    return sorted(same) if same else sorted(emails)
-
+    chosen = sorted(same) if same else sorted(emails)
+    return [{'value': e, 'source_type': infer_source_type(page_url, root_domain), 'source_url': page_url} for e in chosen]
 
 def is_bogus_email(email):
     bad = ['example', 'noreply', 'no-reply', 'test@', 'demo@', 'placeholder', 'yourname', 'name@']
     return any(b in email for b in bad)
 
 
-def extract_socials(soup):
+def extract_socials(soup, html):
     facebook = ''
     linkedin = ''
-    for a in soup.find_all('a', href=True):
-        href = a['href'].lower()
-        if not facebook and 'facebook.com' in href:
-            if not any(x in href for x in ['sharer', 'share?', 'dialog', 'plugins']):
-                facebook = a['href']
-        if not linkedin and 'linkedin.com/company' in href:
-            linkedin = a['href']
+    candidates = []
+    for el in soup.find_all(['a', 'button']):
+        for attr in ('href', 'data-href', 'onclick'):
+            raw = el.get(attr)
+            if raw:
+                candidates.append(raw)
+    candidates.extend(re.findall(r"https?://[^\s\"'<>]+", html, flags=re.I))
+    for raw in candidates:
+        lower = raw.lower()
+        if not facebook and 'facebook.com' in lower and not any(x in lower for x in ['sharer', 'share?', 'dialog', 'plugins']):
+            facebook = raw
+        if not linkedin and 'linkedin.com' in lower and not any(x in lower for x in ['sharearticle', 'feed/update', 'authwall']):
+            linkedin = raw
     return facebook, linkedin
-
 
 def extract_address(text):
     # Normalize newlines to spaces for address matching
@@ -187,6 +203,35 @@ def extract_address(text):
     return None
 
 
+
+
+def normalize_contact_item(item):
+    if isinstance(item, str):
+        return {'value': item.strip(), 'source_type': '', 'source_url': ''}
+    if isinstance(item, dict):
+        return {
+            'value': str(item.get('value', '')).strip(),
+            'source_type': str(item.get('source_type', '')).strip(),
+            'source_url': str(item.get('source_url', '')).strip(),
+        }
+    return {'value': '', 'source_type': '', 'source_url': ''}
+
+
+def dedupe_contact_items(items):
+    out = []
+    seen = set()
+    for raw in items:
+        item = normalize_contact_item(raw)
+        key = item['value'].lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def same_digits(a, b):
+    return re.sub(r'\D', '', str(a or '')) == re.sub(r'\D', '', str(b or ''))
 # ── Site crawler ──────────────────────────────────────────────────────────────
 
 def crawl_site(root_url):
@@ -241,17 +286,17 @@ def crawl_site(root_url):
         text = soup.get_text('\n')
 
         # Phones & faxes
-        p, f = extract_phones(soup, text)
-        all_phones.update(p)
-        all_faxes.update(f)
+        p, f = extract_phones(soup, text, url, root_domain)
+        all_phones.update(tuple(sorted(x.items())) for x in p)
+        all_faxes.update(tuple(sorted(x.items())) for x in f)
 
         # Emails
-        emails = extract_emails(soup, root_domain)
-        all_emails.update(emails)
+        emails = extract_emails(soup, root_domain, url)
+        all_emails.update(tuple(sorted(x.items())) for x in emails)
 
         # Socials
         if not results['facebook'] or not results['linkedin']:
-            fb, li = extract_socials(soup)
+            fb, li = extract_socials(soup, html)
             if fb and not results['facebook']:
                 results['facebook'] = fb
             if li and not results['linkedin']:
@@ -284,12 +329,14 @@ def crawl_site(root_url):
                             queue.append(abs_url)
 
     # Finalize
-    all_phones -= all_faxes
-    results['phones'] = sorted(all_phones)
-    results['faxes'] = sorted(all_faxes)
+    all_phones = [dict(items) for items in all_phones]
+    all_faxes = [dict(items) for items in all_faxes]
+    all_emails = [dict(items) for items in all_emails]
+    results['faxes'] = dedupe_contact_items(all_faxes)
+    results['phones'] = [p for p in dedupe_contact_items(all_phones) if not any(same_digits(p['value'], f['value']) for f in results['faxes'])]
 
-    same_domain = [e for e in all_emails if e.split('@')[1] == root_domain]
-    results['emails'] = sorted(same_domain) if same_domain else sorted(all_emails)
+    same_domain = [e for e in all_emails if e['value'].split('@')[1] == root_domain]
+    results['emails'] = dedupe_contact_items(same_domain if same_domain else all_emails)
 
     return results
 

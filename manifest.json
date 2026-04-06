@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Amazon Brand Research Wizard",
+  "version": "2.1.0",
+  "description": "Research verified brand contacts from Amazon product pages.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.amazon.com/*",
+    "https://amazon.com/*",
+    "https://api.openai.com/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.amazon.com/*",
+        "https://amazon.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/icon128.svg"],
+      "matches": ["https://www.amazon.com/*", "https://amazon.com/*"]
+    }
+  ],
+  "icons": {
+    "128": "icons/icon128.svg"
+  }
+}
