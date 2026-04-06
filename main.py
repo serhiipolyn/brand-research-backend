@@ -37,9 +37,17 @@ PRIORITY_PATHS = [
 ]
 
 B2B_PATHS = [
-    '/wholesale', '/dealer', '/dealers', '/become-a-dealer', '/become-a-distributor',
+    '/wholesale', '/become-a-dealer', '/become-a-distributor',
     '/distributor', '/partner', '/partners', '/reseller', '/pages/wholesale',
-    '/pages/dealer', '/pages/become-a-dealer', '/b2b', '/trade', '/sell-with-us',
+    '/pages/become-a-dealer', '/b2b', '/trade', '/sell-with-us',
+]
+
+# Pages to SKIP — contain dealer lists with hundreds of phone numbers
+SKIP_PATH_KEYWORDS = [
+    'find-a-dealer', 'find-dealer', 'store-locator', 'store_locator',
+    'dealer-locator', 'where-to-buy', 'where_to_buy', 'locations',
+    'distributors-list', 'dealer-list', 'shop-locator', 'find-a-store',
+    'retail-locations', 'sales-reps', 'rep-locator',
 ]
 
 SKIP_DOMAINS = {
@@ -152,13 +160,24 @@ def extract_socials(soup):
 
 
 def extract_address(text):
-    # Match: number street CITY STATE zip
-    full_re = re.compile(r'\b(\d+\s+[A-Za-z0-9 .,\'#\-]{4,60}?)\s+([A-Z]{2})\.?\s*(\d{5})(?:-\d{4})?\b')
-    for m in full_re.finditer(text):
+    # Normalize newlines to spaces for address matching
+    # Then try to find: number + street + city + STATE + zip
+    # Handles both single-line and multi-line addresses
+
+    # First try: full address on one line or across adjacent lines
+    # Replace single newlines with space to join address parts
+    text_joined = re.sub(r'\n', ' ', text)
+
+    full_re = re.compile(r'(?<!\d)(\d{1,5}\s+[A-Za-z][A-Za-z0-9 .,\'#\-]{3,60}?)\s+([A-Z]{2})\.?\s*(\d{5})(?:-\d{4})?(?!\d)')
+    for m in full_re.finditer(text_joined):
         state = m.group(2).upper()
         if state in STATE_TIMEZONE:
-            line = f"{m.group(1).strip()} {state} {m.group(3)}"
-            return {'line': line, 'state': state, 'zip': m.group(3), 'timezone': STATE_TIMEZONE[state]}
+            # Clean up the address line
+            line = re.sub(r'\s+', ' ', f"{m.group(1).strip()} {state} {m.group(3)}")
+            # Skip if too long (probably captured unrelated text)
+            if len(line) < 80:
+                return {'line': line, 'state': state, 'zip': m.group(3), 'timezone': STATE_TIMEZONE[state]}
+
     # Fallback: just state + zip
     fallback_re = re.compile(r'\b([A-Z]{2})\.?\s*(\d{5})(?:-\d{4})?\b')
     for m in fallback_re.finditer(text):
@@ -192,12 +211,19 @@ def crawl_site(root_url):
         queue.append(root_url.rstrip('/') + path)
     queue.append(root_url)
 
+    def should_skip(url):
+        url_lower = url.lower()
+        return any(kw in url_lower for kw in SKIP_PATH_KEYWORDS)
+
     pages_crawled = 0
 
     for url in queue:
         if pages_crawled >= MAX_PAGES:
             break
         if url in visited:
+            continue
+        if should_skip(url):
+            visited.add(url)
             continue
         visited.add(url)
 
@@ -250,8 +276,10 @@ def crawl_site(root_url):
                 abs_url = urljoin(url, a['href'])
                 abs_domain = get_domain(abs_url)
                 if abs_domain == root_domain and abs_url not in visited:
+                    if should_skip(abs_url):
+                        continue
                     href_lower = a['href'].lower()
-                    if any(kw in href_lower for kw in ['contact', 'about', 'wholesale', 'dealer', 'distributor', 'support', 'b2b', 'partner', 'reseller']):
+                    if any(kw in href_lower for kw in ['contact', 'about', 'wholesale', 'become', 'distributor', 'support', 'b2b', 'partner', 'reseller']):
                         if abs_url not in queue:
                             queue.append(abs_url)
 
